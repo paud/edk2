@@ -3,13 +3,7 @@
 
 Copyright (c) 2011 - 2018, Intel Corporation. All rights reserved.<BR>
 (C) Copyright 2018 Hewlett Packard Enterprise Development LP<BR>
-This program and the accompanying materials
-are licensed and made available under the terms and conditions of the BSD License
-which accompanies this distribution.  The full text of the license may be found at
-http://opensource.org/licenses/bsd-license.php
-
-THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
-WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
+SPDX-License-Identifier: BSD-2-Clause-Patent
 
 **/
 
@@ -240,7 +234,7 @@ SaveSecureBootVariable (
                                    it's caller's responsibility to free the memory when finish using it.
 
   @retval EFI_SUCCESS              Create time based payload successfully.
-  @retval EFI_OUT_OF_RESOURCES     There are not enough memory resourses to create time based payload.
+  @retval EFI_OUT_OF_RESOURCES     There are not enough memory resources to create time based payload.
   @retval EFI_INVALID_PARAMETER    The parameter is invalid.
   @retval Others                   Unexpected error happens.
 
@@ -396,7 +390,7 @@ SetSecureBootMode (
   @param[out]  PkCert                Point to the data buffer to store the signature list.
 
   @return EFI_UNSUPPORTED            Unsupported Key Length.
-  @return EFI_OUT_OF_RESOURCES       There are not enough memory resourses to form the signature list.
+  @return EFI_OUT_OF_RESOURCES       There are not enough memory resources to form the signature list.
 
 **/
 EFI_STATUS
@@ -513,7 +507,7 @@ EnrollPlatformKey (
   DEBUG ((EFI_D_INFO, "FilePostFix = %s\n", FilePostFix));
 
   //
-  // Prase the selected PK file and generature PK certificate list.
+  // Prase the selected PK file and generate PK certificate list.
   //
   Status = CreatePkX509SignatureList (
             Private->FileContext->FHandle,
@@ -1094,7 +1088,7 @@ IsSignatureFoundInDatabase (
   }
 
   //
-  // Enumerate all signature data in SigDB to check if executable's signature exists.
+  // Enumerate all signature data in SigDB to check if signature exists for executable.
   //
   CertList = (EFI_SIGNATURE_LIST *) Data;
   while ((DataSize > 0) && (DataSize >= CertList->SignatureListSize)) {
@@ -1318,7 +1312,7 @@ Done:
 /**
   Check whether the signature list exists in given variable data.
 
-  It searches the signature list for the ceritificate hash by CertType.
+  It searches the signature list for the certificate hash by CertType.
   If the signature list is found, get the offset of Database for the
   next hash of a certificate.
 
@@ -1831,7 +1825,6 @@ HashPeImage (
   )
 {
   BOOLEAN                   Status;
-  UINT16                    Magic;
   EFI_IMAGE_SECTION_HEADER  *Section;
   VOID                      *HashCtx;
   UINTN                     CtxSize;
@@ -1874,27 +1867,13 @@ HashPeImage (
   // Measuring PE/COFF Image Header;
   // But CheckSum field and SECURITY data directory (certificate) are excluded
   //
-  if (mNtHeader.Pe32->FileHeader.Machine == IMAGE_FILE_MACHINE_IA64 && mNtHeader.Pe32->OptionalHeader.Magic == EFI_IMAGE_NT_OPTIONAL_HDR32_MAGIC) {
-    //
-    // NOTE: Some versions of Linux ELILO for Itanium have an incorrect magic value
-    //       in the PE/COFF Header. If the MachineType is Itanium(IA64) and the
-    //       Magic value in the OptionalHeader is EFI_IMAGE_NT_OPTIONAL_HDR32_MAGIC
-    //       then override the magic value to EFI_IMAGE_NT_OPTIONAL_HDR64_MAGIC
-    //
-    Magic = EFI_IMAGE_NT_OPTIONAL_HDR64_MAGIC;
-  } else {
-    //
-    // Get the magic value from the PE/COFF Optional Header
-    //
-    Magic = mNtHeader.Pe32->OptionalHeader.Magic;
-  }
 
   //
   // 3.  Calculate the distance from the base of the image header to the image checksum address.
   // 4.  Hash the image header from its base to beginning of the image checksum.
   //
   HashBase = mImageBase;
-  if (Magic == EFI_IMAGE_NT_OPTIONAL_HDR32_MAGIC) {
+  if (mNtHeader.Pe32->OptionalHeader.Magic == EFI_IMAGE_NT_OPTIONAL_HDR32_MAGIC) {
     //
     // Use PE32 offset.
     //
@@ -1915,7 +1894,7 @@ HashPeImage (
   // 6.  Get the address of the beginning of the Cert Directory.
   // 7.  Hash everything from the end of the checksum to the start of the Cert Directory.
   //
-  if (Magic == EFI_IMAGE_NT_OPTIONAL_HDR32_MAGIC) {
+  if (mNtHeader.Pe32->OptionalHeader.Magic == EFI_IMAGE_NT_OPTIONAL_HDR32_MAGIC) {
     //
     // Use PE32 offset.
     //
@@ -1937,7 +1916,7 @@ HashPeImage (
   // 8.  Skip over the Cert Directory. (It is sizeof(IMAGE_DATA_DIRECTORY) bytes.)
   // 9.  Hash everything from the end of the Cert Directory to the end of image header.
   //
-  if (Magic == EFI_IMAGE_NT_OPTIONAL_HDR32_MAGIC) {
+  if (mNtHeader.Pe32->OptionalHeader.Magic == EFI_IMAGE_NT_OPTIONAL_HDR32_MAGIC) {
     //
     // Use PE32 offset
     //
@@ -1958,7 +1937,7 @@ HashPeImage (
   //
   // 10. Set the SUM_OF_BYTES_HASHED to the size of the header.
   //
-  if (Magic == EFI_IMAGE_NT_OPTIONAL_HDR32_MAGIC) {
+  if (mNtHeader.Pe32->OptionalHeader.Magic == EFI_IMAGE_NT_OPTIONAL_HDR32_MAGIC) {
     //
     // Use PE32 offset.
     //
@@ -2032,7 +2011,7 @@ HashPeImage (
   //
   if (mImageSize > SumOfBytesHashed) {
     HashBase = mImageBase + SumOfBytesHashed;
-    if (Magic == EFI_IMAGE_NT_OPTIONAL_HDR32_MAGIC) {
+    if (mNtHeader.Pe32->OptionalHeader.Magic == EFI_IMAGE_NT_OPTIONAL_HDR32_MAGIC) {
       //
       // Use PE32 offset.
       //
@@ -2128,7 +2107,7 @@ HashPeImageByType (
 }
 
 /**
-  Enroll a new executable's signature into Signature Database.
+  Enroll a new signature of executable into Signature Database.
 
   @param[in] PrivateData     The module's private data.
   @param[in] VariableName    Variable name of signature database, must be
@@ -2198,7 +2177,7 @@ EnrollAuthentication2Descriptor (
   }
 
   //
-  // Diretly set AUTHENTICATION_2 data to SetVariable
+  // Directly set AUTHENTICATION_2 data to SetVariable
   //
   Status = gRT->SetVariable(
                   VariableName,
@@ -2229,7 +2208,7 @@ ON_EXIT:
 
 
 /**
-  Enroll a new executable's signature into Signature Database.
+  Enroll a new signature of executable into Signature Database.
 
   @param[in] PrivateData     The module's private data.
   @param[in] VariableName    Variable name of signature database, must be
@@ -2268,7 +2247,7 @@ EnrollImageSignatureToSigDB (
   // Form the SigDB certificate list.
   // Format the data item into EFI_SIGNATURE_LIST type.
   //
-  // We need to parse executable's signature data from specified signed executable file.
+  // We need to parse signature data of executable from specified signed executable file.
   // In current implementation, we simply trust the pass-in signed executable file.
   // In reality, it's OS's responsibility to verify the signed executable file.
   //
@@ -3290,7 +3269,7 @@ SecureBootExtractConfigFromVariable (
   SecureBootMode   = NULL;
 
   //
-  // Initilize the Date and Time using system time.
+  // Initialize the Date and Time using system time.
   //
   ConfigData->CertificateFormat = HASHALG_RAW;
   ConfigData->AlwaysRevocation = TRUE;
@@ -3327,7 +3306,7 @@ SecureBootExtractConfigFromVariable (
   }
 
   //
-  // Check SecureBootEnable & Pk status, fix the inconsistence.
+  // Check SecureBootEnable & Pk status, fix the inconsistency.
   // If the SecureBootEnable Variable doesn't exist, hide the SecureBoot Enable/Disable
   // Checkbox.
   //
@@ -3335,7 +3314,7 @@ SecureBootExtractConfigFromVariable (
   GetVariable2 (EFI_SECURE_BOOT_ENABLE_NAME, &gEfiSecureBootEnableDisableGuid, (VOID**)&SecureBootEnable, NULL);
 
   //
-  // Fix Pk, SecureBootEnable inconsistence
+  // Fix Pk and SecureBootEnable inconsistency
   //
   if ((SetupMode != NULL) && (*SetupMode) == USER_MODE) {
     ConfigData->HideSecureBoot = FALSE;
@@ -4092,7 +4071,7 @@ ON_EXIT:
 }
 
 /**
-  This functino to load signature data under the signature list.
+  This function to load signature data under the signature list.
 
   @param[in]  PrivateData         Module's private data.
   @param[in]  LabelId             Label number to insert opcodes.

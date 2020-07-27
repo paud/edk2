@@ -20,13 +20,7 @@
   Once the image is unloaded, the protection is removed automatically.
 
 Copyright (c) 2017 - 2018, Intel Corporation. All rights reserved.<BR>
-This program and the accompanying materials
-are licensed and made available under the terms and conditions of the BSD License
-which accompanies this distribution.  The full text of the license may be found at
-http://opensource.org/licenses/bsd-license.php
-
-THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
-WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
+SPDX-License-Identifier: BSD-2-Clause-Patent
 
 **/
 
@@ -41,16 +35,12 @@ WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
 
 #include <Guid/EventGroup.h>
 #include <Guid/MemoryAttributesTable.h>
-#include <Guid/PropertiesTable.h>
 
 #include <Protocol/FirmwareVolume2.h>
 #include <Protocol/SimpleFileSystem.h>
 
 #include "DxeMain.h"
 #include "Mem/HeapGuard.h"
-
-#define CACHE_ATTRIBUTE_MASK   (EFI_MEMORY_UC | EFI_MEMORY_WC | EFI_MEMORY_WT | EFI_MEMORY_WB | EFI_MEMORY_UCE | EFI_MEMORY_WP)
-#define MEMORY_ATTRIBUTE_MASK  (EFI_MEMORY_RP | EFI_MEMORY_XP | EFI_MEMORY_RO)
 
 //
 // Image type definitions
@@ -228,7 +218,7 @@ SetUefiImageMemoryAttributes (
   Status = CoreGetMemorySpaceDescriptor(BaseAddress, &Descriptor);
   ASSERT_EFI_ERROR(Status);
 
-  FinalAttributes = (Descriptor.Attributes & CACHE_ATTRIBUTE_MASK) | (Attributes & MEMORY_ATTRIBUTE_MASK);
+  FinalAttributes = (Descriptor.Attributes & EFI_CACHE_ATTRIBUTE_MASK) | (Attributes & EFI_MEMORY_ATTRIBUTE_MASK);
 
   DEBUG ((DEBUG_INFO, "SetUefiImageMemoryAttributes - 0x%016lx - 0x%016lx (0x%016lx)\n", BaseAddress, Length, FinalAttributes));
 
@@ -406,7 +396,6 @@ ProtectUefiImage (
   IMAGE_PROPERTIES_RECORD              *ImageRecord;
   CHAR8                                *PdbPointer;
   IMAGE_PROPERTIES_RECORD_CODE_SECTION *ImageRecordCodeSection;
-  UINT16                               Magic;
   BOOLEAN                              IsAligned;
   UINT32                               ProtectionPolicy;
 
@@ -466,21 +455,7 @@ ProtectUefiImage (
   //
   // Get SectionAlignment
   //
-  if (Hdr.Pe32->FileHeader.Machine == IMAGE_FILE_MACHINE_IA64 && Hdr.Pe32->OptionalHeader.Magic == EFI_IMAGE_NT_OPTIONAL_HDR32_MAGIC) {
-    //
-    // NOTE: Some versions of Linux ELILO for Itanium have an incorrect magic value
-    //       in the PE/COFF Header. If the MachineType is Itanium(IA64) and the
-    //       Magic value in the OptionalHeader is EFI_IMAGE_NT_OPTIONAL_HDR32_MAGIC
-    //       then override the magic value to EFI_IMAGE_NT_OPTIONAL_HDR64_MAGIC
-    //
-    Magic = EFI_IMAGE_NT_OPTIONAL_HDR64_MAGIC;
-  } else {
-    //
-    // Get the magic value from the PE/COFF Optional Header
-    //
-    Magic = Hdr.Pe32->OptionalHeader.Magic;
-  }
-  if (Magic == EFI_IMAGE_NT_OPTIONAL_HDR32_MAGIC) {
+  if (Hdr.Pe32->OptionalHeader.Magic == EFI_IMAGE_NT_OPTIONAL_HDR32_MAGIC) {
     SectionAlignment  = Hdr.Pe32->OptionalHeader.SectionAlignment;
   } else {
     SectionAlignment  = Hdr.Pe32Plus->OptionalHeader.SectionAlignment;
@@ -946,7 +921,7 @@ InitializeDxeNxMemoryProtectionPolicy (
             (EFI_MEMORY_PRESENT | EFI_MEMORY_INITIALIZED)) {
 
         Attributes = GetPermissionAttributeForMemoryType (EfiConventionalMemory) |
-                     (Entry->Attributes & CACHE_ATTRIBUTE_MASK);
+                     (Entry->Attributes & EFI_CACHE_ATTRIBUTE_MASK);
 
         DEBUG ((DEBUG_INFO,
           "Untested GCD memory space region: - 0x%016lx - 0x%016lx (0x%016lx)\n",
@@ -990,7 +965,7 @@ MemoryProtectionCpuArchProtocolNotify (
   DEBUG ((DEBUG_INFO, "MemoryProtectionCpuArchProtocolNotify:\n"));
   Status = CoreLocateProtocol (&gEfiCpuArchProtocolGuid, NULL, (VOID **)&gCpu);
   if (EFI_ERROR (Status)) {
-    return;
+    goto Done;
   }
 
   //
@@ -1006,7 +981,7 @@ MemoryProtectionCpuArchProtocolNotify (
   HeapGuardCpuArchProtocolNotify ();
 
   if (mImageProtectionPolicy == 0) {
-    return;
+    goto Done;
   }
 
   Status = gBS->LocateHandleBuffer (
@@ -1017,7 +992,7 @@ MemoryProtectionCpuArchProtocolNotify (
                   &HandleBuffer
                   );
   if (EFI_ERROR (Status) && (NoHandles == 0)) {
-    return ;
+    goto Done;
   }
 
   for (Index = 0; Index < NoHandles; Index++) {
@@ -1040,9 +1015,10 @@ MemoryProtectionCpuArchProtocolNotify (
 
     ProtectUefiImage (LoadedImage, LoadedImageDevicePath);
   }
+  FreePool (HandleBuffer);
 
+Done:
   CoreCloseEvent (Event);
-  return;
 }
 
 /**
@@ -1114,6 +1090,11 @@ DisableNullDetectionAtTheEndOfDxe (
             );
   ASSERT_EFI_ERROR (Status);
 
+  //
+  // Page 0 might have be allocated to avoid misuses. Free it here anyway.
+  //
+  CoreFreePages (0, 1);
+
   CoreCloseEvent (Event);
   DEBUG ((DEBUG_INFO, "DisableNullDetectionAtTheEndOfDxe(): end\r\n"));
 
@@ -1150,26 +1131,24 @@ CoreInitializeMemoryProtection (
   ASSERT (GetPermissionAttributeForMemoryType (EfiBootServicesData) ==
           GetPermissionAttributeForMemoryType (EfiConventionalMemory));
 
-  if (mImageProtectionPolicy != 0 || PcdGet64 (PcdDxeNxMemoryProtectionPolicy) != 0) {
-    Status = CoreCreateEvent (
-               EVT_NOTIFY_SIGNAL,
-               TPL_CALLBACK,
-               MemoryProtectionCpuArchProtocolNotify,
-               NULL,
-               &Event
-               );
-    ASSERT_EFI_ERROR(Status);
+  Status = CoreCreateEvent (
+             EVT_NOTIFY_SIGNAL,
+             TPL_CALLBACK,
+             MemoryProtectionCpuArchProtocolNotify,
+             NULL,
+             &Event
+             );
+  ASSERT_EFI_ERROR(Status);
 
-    //
-    // Register for protocol notifactions on this event
-    //
-    Status = CoreRegisterProtocolNotify (
-               &gEfiCpuArchProtocolGuid,
-               Event,
-               &Registration
-               );
-    ASSERT_EFI_ERROR(Status);
-  }
+  //
+  // Register for protocol notifactions on this event
+  //
+  Status = CoreRegisterProtocolNotify (
+             &gEfiCpuArchProtocolGuid,
+             Event,
+             &Registration
+             );
+  ASSERT_EFI_ERROR(Status);
 
   //
   // Register a callback to disable NULL pointer detection at EndOfDxe
@@ -1265,7 +1244,7 @@ ApplyMemoryProtectionPolicy (
   // Don't overwrite Guard pages, which should be the first and/or last page,
   // if any.
   //
-  if (IsHeapGuardEnabled ()) {
+  if (IsHeapGuardEnabled (GUARD_HEAP_TYPE_PAGE|GUARD_HEAP_TYPE_POOL)) {
     if (IsGuardPage (Memory))  {
       Memory += EFI_PAGE_SIZE;
       Length -= EFI_PAGE_SIZE;

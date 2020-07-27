@@ -6,13 +6,7 @@
 
 Copyright (c) 2018 Qualcomm Datacenter Technologies, Inc.
 Copyright (c) 2006 - 2018, Intel Corporation. All rights reserved.<BR>
-This program and the accompanying materials
-are licensed and made available under the terms and conditions of the BSD License
-which accompanies this distribution.  The full text of the license may be found at
-http://opensource.org/licenses/bsd-license.php
-
-THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
-WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
+SPDX-License-Identifier: BSD-2-Clause-Patent
 
 **/
 
@@ -1282,6 +1276,15 @@ PartitionInstallChildHandle (
   } else {
     FreePool (Private->DevicePath);
     FreePool (Private);
+
+    //
+    // if the Status == EFI_ALREADY_STARTED, it means the child handles
+    // are already installed. So return EFI_SUCCESS to avoid do the next
+    // partition type check.
+    //
+    if (Status == EFI_ALREADY_STARTED) {
+      Status = EFI_SUCCESS;
+    }
   }
 
   return Status;

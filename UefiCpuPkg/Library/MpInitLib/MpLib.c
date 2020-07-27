@@ -1,20 +1,17 @@
 /** @file
   CPU MP Initialize Library common functions.
 
-  Copyright (c) 2016 - 2018, Intel Corporation. All rights reserved.<BR>
-  This program and the accompanying materials
-  are licensed and made available under the terms and conditions of the BSD License
-  which accompanies this distribution.  The full text of the license may be found at
-  http://opensource.org/licenses/bsd-license.php
+  Copyright (c) 2016 - 2020, Intel Corporation. All rights reserved.<BR>
+  Copyright (c) 2020, AMD Inc. All rights reserved.<BR>
 
-  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
-  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
+  SPDX-License-Identifier: BSD-2-Clause-Patent
 
 **/
 
 #include "MpLib.h"
 
 EFI_GUID mCpuInitMpLibHobGuid = CPU_INIT_MP_LIB_HOB_GUID;
+
 
 /**
   The function will check if BSP Execute Disable is enabled.
@@ -217,9 +214,9 @@ RestoreVolatileRegisters (
   CPUID_VERSION_INFO_EDX        VersionInfoEdx;
   IA32_TSS_DESCRIPTOR           *Tss;
 
-  AsmWriteCr0 (VolatileRegisters->Cr0);
   AsmWriteCr3 (VolatileRegisters->Cr3);
   AsmWriteCr4 (VolatileRegisters->Cr4);
+  AsmWriteCr0 (VolatileRegisters->Cr0);
 
   if (IsRestoreDr) {
     AsmCpuid (CPUID_VERSION_INFO, NULL, NULL, NULL, &VersionInfoEdx.Uint32);
@@ -405,12 +402,16 @@ ApInitializeSync (
   )
 {
   CPU_MP_DATA  *CpuMpData;
+  UINTN        ProcessorNumber;
+  EFI_STATUS   Status;
 
   CpuMpData = (CPU_MP_DATA *) Buffer;
+  Status = GetProcessorNumber (CpuMpData, &ProcessorNumber);
+  ASSERT_EFI_ERROR (Status);
   //
   // Load microcode on AP
   //
-  MicrocodeDetect (CpuMpData, FALSE);
+  MicrocodeDetect (CpuMpData, ProcessorNumber);
   //
   // Sync BSP's MTRR table to AP
   //
@@ -464,12 +465,13 @@ CollectProcessorCount (
   )
 {
   UINTN                  Index;
+  CPU_INFO_IN_HOB        *CpuInfoInHob;
+  BOOLEAN                X2Apic;
 
   //
   // Send 1st broadcast IPI to APs to wakeup APs
   //
-  CpuMpData->InitFlag     = ApInitConfig;
-  CpuMpData->X2ApicEnable = FALSE;
+  CpuMpData->InitFlag = ApInitConfig;
   WakeUpAP (CpuMpData, TRUE, 0, NULL, NULL, TRUE);
   CpuMpData->InitFlag = ApInitDone;
   ASSERT (CpuMpData->CpuCount <= PcdGet32 (PcdCpuMaxLogicalProcessorNumber));
@@ -480,13 +482,29 @@ CollectProcessorCount (
     CpuPause ();
   }
 
+
+  //
+  // Enable x2APIC mode if
+  //  1. Number of CPU is greater than 255; or
+  //  2. There are any logical processors reporting an Initial APIC ID of 255 or greater.
+  //
+  X2Apic = FALSE;
   if (CpuMpData->CpuCount > 255) {
     //
     // If there are more than 255 processor found, force to enable X2APIC
     //
-    CpuMpData->X2ApicEnable = TRUE;
+    X2Apic = TRUE;
+  } else {
+    CpuInfoInHob = (CPU_INFO_IN_HOB *) (UINTN) CpuMpData->CpuInfoInHob;
+    for (Index = 0; Index < CpuMpData->CpuCount; Index++) {
+      if (CpuInfoInHob[Index].InitialApicId >= 0xFF) {
+        X2Apic = TRUE;
+        break;
+      }
+    }
   }
-  if (CpuMpData->X2ApicEnable) {
+
+  if (X2Apic) {
     DEBUG ((DEBUG_INFO, "Force x2APIC mode!\n"));
     //
     // Wakeup all APs to enable x2APIC mode
@@ -537,7 +555,8 @@ InitializeApData (
   IN     UINT64           ApTopOfStack
   )
 {
-  CPU_INFO_IN_HOB          *CpuInfoInHob;
+  CPU_INFO_IN_HOB                  *CpuInfoInHob;
+  MSR_IA32_PLATFORM_ID_REGISTER    PlatformIdMsr;
 
   CpuInfoInHob = (CPU_INFO_IN_HOB *) (UINTN) CpuMpData->CpuInfoInHob;
   CpuInfoInHob[ProcessorNumber].InitialApicId = GetInitialApicId ();
@@ -547,15 +566,22 @@ InitializeApData (
 
   CpuMpData->CpuData[ProcessorNumber].Waiting    = FALSE;
   CpuMpData->CpuData[ProcessorNumber].CpuHealthy = (BistData == 0) ? TRUE : FALSE;
-  if (CpuInfoInHob[ProcessorNumber].InitialApicId >= 0xFF) {
-    //
-    // Set x2APIC mode if there are any logical processor reporting
-    // an Initial APIC ID of 255 or greater.
-    //
-    AcquireSpinLock(&CpuMpData->MpLock);
-    CpuMpData->X2ApicEnable = TRUE;
-    ReleaseSpinLock(&CpuMpData->MpLock);
+
+  //
+  // NOTE: PlatformId is not relevant on AMD platforms.
+  //
+  if (!StandardSignatureIsAuthenticAMD ()) {
+    PlatformIdMsr.Uint64 = AsmReadMsr64 (MSR_IA32_PLATFORM_ID);
+    CpuMpData->CpuData[ProcessorNumber].PlatformId = (UINT8)PlatformIdMsr.Bits.PlatformId;
   }
+
+  AsmCpuid (
+    CPUID_VERSION_INFO,
+    &CpuMpData->CpuData[ProcessorNumber].ProcessorSignature,
+    NULL,
+    NULL,
+    NULL
+    );
 
   InitializeSpinLock(&CpuMpData->CpuData[ProcessorNumber].ApLock);
   SetApState (&CpuMpData->CpuData[ProcessorNumber], CpuStateIdle);
@@ -614,10 +640,6 @@ ApWakeupFunction (
       ApTopOfStack  = CpuMpData->Buffer + (ProcessorNumber + 1) * CpuMpData->CpuApStackSize;
       BistData = *(UINT32 *) ((UINTN) ApTopOfStack - sizeof (UINTN));
       //
-      // Do some AP initialize sync
-      //
-      ApInitializeSync (CpuMpData);
-      //
       // CpuMpData->CpuData[0].VolatileRegisters is initialized based on BSP environment,
       //   to initialize AP in InitConfig path.
       // NOTE: IDTR.BASE stored in CpuMpData->CpuData[0].VolatileRegisters points to a different IDT shared by all APs.
@@ -625,6 +647,8 @@ ApWakeupFunction (
       RestoreVolatileRegisters (&CpuMpData->CpuData[0].VolatileRegisters, FALSE);
       InitializeApData (CpuMpData, ProcessorNumber, BistData, ApTopOfStack);
       ApStartupSignalBuffer = CpuMpData->CpuData[ProcessorNumber].StartupApSignal;
+
+      InterlockedDecrement ((UINT32 *) &CpuMpData->MpCpuExchangeInfo->NumApsExecuting);
     } else {
       //
       // Execute AP function if AP is ready
@@ -639,18 +663,31 @@ ApWakeupFunction (
         WAKEUP_AP_SIGNAL,
         0
         );
-      if (CpuMpData->ApLoopMode == ApInHltLoop) {
+
+      if (CpuMpData->InitFlag == ApInitReconfig) {
         //
-        // Restore AP's volatile registers saved
+        // ApInitReconfig happens when:
+        // 1. AP is re-enabled after it's disabled, in either PEI or DXE phase.
+        // 2. AP is initialized in DXE phase.
+        // In either case, use the volatile registers value derived from BSP.
+        // NOTE: IDTR.BASE stored in CpuMpData->CpuData[0].VolatileRegisters points to a
+        //   different IDT shared by all APs.
         //
-        RestoreVolatileRegisters (&CpuMpData->CpuData[ProcessorNumber].VolatileRegisters, TRUE);
-      } else {
-        //
-        // The CPU driver might not flush TLB for APs on spot after updating
-        // page attributes. AP in mwait loop mode needs to take care of it when
-        // woken up.
-        //
-        CpuFlushTlb ();
+        RestoreVolatileRegisters (&CpuMpData->CpuData[0].VolatileRegisters, FALSE);
+      }  else {
+        if (CpuMpData->ApLoopMode == ApInHltLoop) {
+          //
+          // Restore AP's volatile registers saved before AP is halted
+          //
+          RestoreVolatileRegisters (&CpuMpData->CpuData[ProcessorNumber].VolatileRegisters, TRUE);
+        } else {
+          //
+          // The CPU driver might not flush TLB for APs on spot after updating
+          // page attributes. AP in mwait loop mode needs to take care of it when
+          // woken up.
+          //
+          CpuFlushTlb ();
+        }
       }
 
       if (GetApState (&CpuMpData->CpuData[ProcessorNumber]) == CpuStateReady) {
@@ -696,7 +733,7 @@ ApWakeupFunction (
             }
           }
         }
-        SetApState (&CpuMpData->CpuData[ProcessorNumber], CpuStateIdle);
+        SetApState (&CpuMpData->CpuData[ProcessorNumber], CpuStateFinished);
       }
     }
 
@@ -704,7 +741,6 @@ ApWakeupFunction (
     // AP finished executing C code
     //
     InterlockedIncrement ((UINT32 *) &CpuMpData->FinishedCount);
-    InterlockedDecrement ((UINT32 *) &CpuMpData->MpCpuExchangeInfo->NumApsExecuting);
 
     //
     // Place AP is specified loop mode
@@ -795,6 +831,7 @@ FillExchangeInfoData (
   volatile MP_CPU_EXCHANGE_INFO    *ExchangeInfo;
   UINTN                            Size;
   IA32_SEGMENT_DESCRIPTOR          *Selector;
+  IA32_CR4                         Cr4;
 
   ExchangeInfo                  = CpuMpData->MpCpuExchangeInfo;
   ExchangeInfo->Lock            = 0;
@@ -818,6 +855,18 @@ FillExchangeInfoData (
   ExchangeInfo->EnableExecuteDisable = IsBspExecuteDisableEnabled ();
 
   ExchangeInfo->InitializeFloatingPointUnitsAddress = (UINTN)InitializeFloatingPointUnits;
+
+  //
+  // We can check either CPUID(7).ECX[bit16] or check CR4.LA57[bit12]
+  //  to determin whether 5-Level Paging is enabled.
+  // CPUID(7).ECX[bit16] shows CPU's capability, CR4.LA57[bit12] shows
+  // current system setting.
+  // Using latter way is simpler because it also eliminates the needs to
+  //  check whether platform wants to enable it.
+  //
+  Cr4.UintN = AsmReadCr4 ();
+  ExchangeInfo->Enable5LevelPaging = (BOOLEAN) (Cr4.Bits.LA57 == 1);
+  DEBUG ((DEBUG_INFO, "%a: 5-Level Paging = %d\n", gEfiCallerBaseName, ExchangeInfo->Enable5LevelPaging));
 
   //
   // Get the BSP's data of GDT and IDT
@@ -1014,7 +1063,7 @@ WakeUpAP (
         CpuData = &CpuMpData->CpuData[Index];
         //
         // All AP(include disabled AP) will be woke up by INIT-SIPI-SIPI, but
-        // the AP procedure will be skipped for disabled AP because AP state 
+        // the AP procedure will be skipped for disabled AP because AP state
         // is not CpuStateReady.
         //
         if (GetApState (CpuData) == CpuStateDisabled && !WakeUpDisabledAps) {
@@ -1036,24 +1085,67 @@ WakeUpAP (
       SendInitSipiSipiAllExcludingSelf ((UINT32) ExchangeInfo->BufferStart);
     }
     if (CpuMpData->InitFlag == ApInitConfig) {
-      //
-      // Here support two methods to collect AP count through adjust
-      // PcdCpuApInitTimeOutInMicroSeconds values.
-      //
-      // one way is set a value to just let the first AP to start the
-      // initialization, then through the later while loop to wait all Aps
-      // finsh the initialization.
-      // The other way is set a value to let all APs finished the initialzation.
-      // In this case, the later while loop is useless.
-      //
-      TimedWaitForApFinish (
-        CpuMpData,
-        PcdGet32 (PcdCpuMaxLogicalProcessorNumber) - 1,
-        PcdGet32 (PcdCpuApInitTimeOutInMicroSeconds)
-        );
+      if (PcdGet32 (PcdCpuBootLogicalProcessorNumber) > 0) {
+        //
+        // The AP enumeration algorithm below is suitable only when the
+        // platform can tell us the *exact* boot CPU count in advance.
+        //
+        // The wait below finishes only when the detected AP count reaches
+        // (PcdCpuBootLogicalProcessorNumber - 1), regardless of how long that
+        // takes. If at least one AP fails to check in (meaning a platform
+        // hardware bug), the detection hangs forever, by design. If the actual
+        // boot CPU count in the system is higher than
+        // PcdCpuBootLogicalProcessorNumber (meaning a platform
+        // misconfiguration), then some APs may complete initialization after
+        // the wait finishes, and cause undefined behavior.
+        //
+        TimedWaitForApFinish (
+          CpuMpData,
+          PcdGet32 (PcdCpuBootLogicalProcessorNumber) - 1,
+          MAX_UINT32 // approx. 71 minutes
+          );
+      } else {
+        //
+        // The AP enumeration algorithm below is suitable for two use cases.
+        //
+        // (1) The check-in time for an individual AP is bounded, and APs run
+        //     through their initialization routines strongly concurrently. In
+        //     particular, the number of concurrently running APs
+        //     ("NumApsExecuting") is never expected to fall to zero
+        //     *temporarily* -- it is expected to fall to zero only when all
+        //     APs have checked-in.
+        //
+        //     In this case, the platform is supposed to set
+        //     PcdCpuApInitTimeOutInMicroSeconds to a low-ish value (just long
+        //     enough for one AP to start initialization). The timeout will be
+        //     reached soon, and remaining APs are collected by watching
+        //     NumApsExecuting fall to zero. If NumApsExecuting falls to zero
+        //     mid-process, while some APs have not completed initialization,
+        //     the behavior is undefined.
+        //
+        // (2) The check-in time for an individual AP is unbounded, and/or APs
+        //     may complete their initializations widely spread out. In
+        //     particular, some APs may finish initialization before some APs
+        //     even start.
+        //
+        //     In this case, the platform is supposed to set
+        //     PcdCpuApInitTimeOutInMicroSeconds to a high-ish value. The AP
+        //     enumeration will always take that long (except when the boot CPU
+        //     count happens to be maximal, that is,
+        //     PcdCpuMaxLogicalProcessorNumber). All APs are expected to
+        //     check-in before the timeout, and NumApsExecuting is assumed zero
+        //     at timeout. APs that miss the time-out may cause undefined
+        //     behavior.
+        //
+        TimedWaitForApFinish (
+          CpuMpData,
+          PcdGet32 (PcdCpuMaxLogicalProcessorNumber) - 1,
+          PcdGet32 (PcdCpuApInitTimeOutInMicroSeconds)
+          );
 
-      while (CpuMpData->MpCpuExchangeInfo->NumApsExecuting != 0) {
-        CpuPause();
+        while (CpuMpData->MpCpuExchangeInfo->NumApsExecuting != 0) {
+          CpuPause();
+        }
       }
     } else {
       //
@@ -1370,10 +1462,11 @@ CheckThisAP (
   //
   // If the AP finishes for StartupThisAP(), return EFI_SUCCESS.
   //
-  if (GetApState(CpuData) == CpuStateIdle) {
+  if (GetApState(CpuData) == CpuStateFinished) {
     if (CpuData->Finished != NULL) {
       *(CpuData->Finished) = TRUE;
     }
+    SetApState (CpuData, CpuStateIdle);
     return EFI_SUCCESS;
   } else {
     //
@@ -1434,9 +1527,10 @@ CheckAllAPs (
     // Only BSP and corresponding AP access this unit of CPU Data. This means the AP will not modify the
     // value of state after setting the it to CpuStateIdle, so BSP can safely make use of its value.
     //
-    if (GetApState(CpuData) == CpuStateIdle) {
+    if (GetApState(CpuData) == CpuStateFinished) {
       CpuMpData->RunningCount --;
       CpuMpData->CpuData[ProcessorNumber].Waiting = FALSE;
+      SetApState(CpuData, CpuStateIdle);
 
       //
       // If in Single Thread mode, then search for the next waiting AP for execution.
@@ -1542,7 +1636,6 @@ MpInitLibInitialize (
   UINTN                    ApResetVectorSize;
   UINTN                    BackupBufferAddr;
   UINTN                    ApIdtBase;
-  VOID                     *MicrocodePatchInRam;
 
   OldCpuMpData = GetCpuMpDataFromGuidedHob ();
   if (OldCpuMpData == NULL) {
@@ -1558,7 +1651,7 @@ MpInitLibInitialize (
   ApLoopMode  = GetApLoopMode (&MonitorFilterSize);
 
   //
-  // Save BSP's Control registers for APs
+  // Save BSP's Control registers for APs.
   //
   SaveVolatileRegisters (&VolatileRegisters);
 
@@ -1610,38 +1703,6 @@ MpInitLibInitialize (
   CpuMpData->SwitchBspFlag    = FALSE;
   CpuMpData->CpuData          = (CPU_AP_DATA *) (CpuMpData + 1);
   CpuMpData->CpuInfoInHob     = (UINT64) (UINTN) (CpuMpData->CpuData + MaxLogicalProcessorNumber);
-  CpuMpData->MicrocodePatchRegionSize = PcdGet64 (PcdCpuMicrocodePatchRegionSize);
-  //
-  // If platform has more than one CPU, relocate microcode to memory to reduce
-  // loading microcode time.
-  //
-  MicrocodePatchInRam = NULL;
-  if (MaxLogicalProcessorNumber > 1) {
-    MicrocodePatchInRam = AllocatePages (
-                            EFI_SIZE_TO_PAGES (
-                              (UINTN)CpuMpData->MicrocodePatchRegionSize
-                              )
-                            );
-  }
-  if (MicrocodePatchInRam == NULL) {
-    //
-    // there is only one processor, or no microcode patch is available, or
-    // memory allocation failed
-    //
-    CpuMpData->MicrocodePatchAddress = PcdGet64 (PcdCpuMicrocodePatchAddress);
-  } else {
-    //
-    // there are multiple processors, and a microcode patch is available, and
-    // memory allocation succeeded
-    //
-    CopyMem (
-      MicrocodePatchInRam,
-      (VOID *)(UINTN)PcdGet64 (PcdCpuMicrocodePatchAddress),
-      (UINTN)CpuMpData->MicrocodePatchRegionSize
-      );
-    CpuMpData->MicrocodePatchAddress = (UINTN)MicrocodePatchInRam;
-  }
-
   InitializeSpinLock(&CpuMpData->MpLock);
 
   //
@@ -1656,6 +1717,10 @@ MpInitLibInitialize (
   //
   CopyMem ((VOID *)ApIdtBase, (VOID *)VolatileRegisters.Idtr.Base, VolatileRegisters.Idtr.Limit + 1);
   VolatileRegisters.Idtr.Base = ApIdtBase;
+  //
+  // Don't pass BSP's TR to APs to avoid AP init failure.
+  //
+  VolatileRegisters.Tr = 0;
   CopyMem (&CpuMpData->CpuData[0].VolatileRegisters, &VolatileRegisters, sizeof (VolatileRegisters));
   //
   // Set BSP basic information
@@ -1681,14 +1746,6 @@ MpInitLibInitialize (
       (UINT32 *)(MonitorBuffer + MonitorFilterSize * Index);
   }
   //
-  // Load Microcode on BSP
-  //
-  MicrocodeDetect (CpuMpData, TRUE);
-  //
-  // Store BSP's MTRR setting
-  //
-  MtrrGetAllMtrrs (&CpuMpData->MtrrTable);
-  //
   // Enable the local APIC for Virtual Wire Mode.
   //
   ProgramVirtualWireMode ();
@@ -1707,33 +1764,59 @@ MpInitLibInitialize (
     //
     CpuMpData->CpuCount  = OldCpuMpData->CpuCount;
     CpuMpData->BspNumber = OldCpuMpData->BspNumber;
-    CpuMpData->InitFlag  = ApInitReconfig;
     CpuMpData->CpuInfoInHob = OldCpuMpData->CpuInfoInHob;
     CpuInfoInHob = (CPU_INFO_IN_HOB *) (UINTN) CpuMpData->CpuInfoInHob;
     for (Index = 0; Index < CpuMpData->CpuCount; Index++) {
       InitializeSpinLock(&CpuMpData->CpuData[Index].ApLock);
-      if (CpuInfoInHob[Index].InitialApicId >= 255 || Index > 254) {
-        CpuMpData->X2ApicEnable = TRUE;
-      }
       CpuMpData->CpuData[Index].CpuHealthy = (CpuInfoInHob[Index].Health == 0)? TRUE:FALSE;
       CpuMpData->CpuData[Index].ApFunction = 0;
-      CopyMem (&CpuMpData->CpuData[Index].VolatileRegisters, &VolatileRegisters, sizeof (CPU_VOLATILE_REGISTERS));
     }
-    if (MaxLogicalProcessorNumber > 1) {
+  }
+
+  if (!GetMicrocodePatchInfoFromHob (
+         &CpuMpData->MicrocodePatchAddress,
+         &CpuMpData->MicrocodePatchRegionSize
+         )) {
+    //
+    // The microcode patch information cache HOB does not exist, which means
+    // the microcode patches data has not been loaded into memory yet
+    //
+    ShadowMicrocodeUpdatePatch (CpuMpData);
+  }
+
+  //
+  // Detect and apply Microcode on BSP
+  //
+  MicrocodeDetect (CpuMpData, CpuMpData->BspNumber);
+  //
+  // Store BSP's MTRR setting
+  //
+  MtrrGetAllMtrrs (&CpuMpData->MtrrTable);
+
+  //
+  // Wakeup APs to do some AP initialize sync (Microcode & MTRR)
+  //
+  if (CpuMpData->CpuCount > 1) {
+    if (OldCpuMpData != NULL) {
       //
-      // Wakeup APs to do some AP initialize sync
+      // Only needs to use this flag for DXE phase to update the wake up
+      // buffer. Wakeup buffer allocated in PEI phase is no longer valid
+      // in DXE.
       //
-      WakeUpAP (CpuMpData, TRUE, 0, ApInitializeSync, CpuMpData, TRUE);
-      //
-      // Wait for all APs finished initialization
-      //
-      while (CpuMpData->FinishedCount < (CpuMpData->CpuCount - 1)) {
-        CpuPause ();
-      }
+      CpuMpData->InitFlag = ApInitReconfig;
+    }
+    WakeUpAP (CpuMpData, TRUE, 0, ApInitializeSync, CpuMpData, TRUE);
+    //
+    // Wait for all APs finished initialization
+    //
+    while (CpuMpData->FinishedCount < (CpuMpData->CpuCount - 1)) {
+      CpuPause ();
+    }
+    if (OldCpuMpData != NULL) {
       CpuMpData->InitFlag = ApInitDone;
-      for (Index = 0; Index < CpuMpData->CpuCount; Index++) {
-        SetApState (&CpuMpData->CpuData[Index], CpuStateIdle);
-      }
+    }
+    for (Index = 0; Index < CpuMpData->CpuCount; Index++) {
+      SetApState (&CpuMpData->CpuData[Index], CpuStateIdle);
     }
   }
 
@@ -1773,9 +1856,16 @@ MpInitLibGetProcessorInfo (
   CPU_MP_DATA            *CpuMpData;
   UINTN                  CallerNumber;
   CPU_INFO_IN_HOB        *CpuInfoInHob;
+  UINTN                  OriginalProcessorNumber;
 
   CpuMpData = GetCpuMpData ();
   CpuInfoInHob = (CPU_INFO_IN_HOB *) (UINTN) CpuMpData->CpuInfoInHob;
+
+  //
+  // Lower 24 bits contains the actual processor number.
+  //
+  OriginalProcessorNumber = ProcessorNumber;
+  ProcessorNumber &= BIT24 - 1;
 
   //
   // Check whether caller processor is BSP
@@ -1816,6 +1906,18 @@ MpInitLibGetProcessorInfo (
     &ProcessorInfoBuffer->Location.Core,
     &ProcessorInfoBuffer->Location.Thread
     );
+
+  if ((OriginalProcessorNumber & CPU_V2_EXTENDED_TOPOLOGY) != 0) {
+    GetProcessorLocation2ByApicId (
+      CpuInfoInHob[ProcessorNumber].ApicId,
+      &ProcessorInfoBuffer->ExtendedInformation.Location2.Package,
+      &ProcessorInfoBuffer->ExtendedInformation.Location2.Die,
+      &ProcessorInfoBuffer->ExtendedInformation.Location2.Tile,
+      &ProcessorInfoBuffer->ExtendedInformation.Location2.Module,
+      &ProcessorInfoBuffer->ExtendedInformation.Location2.Core,
+      &ProcessorInfoBuffer->ExtendedInformation.Location2.Thread
+      );
+  }
 
   if (HealthData != NULL) {
     HealthData->Uint32 = CpuInfoInHob[ProcessorNumber].Health;
@@ -1933,7 +2035,7 @@ SwitchBSPWorker (
   //
   // Wait for old BSP finished AP task
   //
-  while (GetApState (&CpuMpData->CpuData[CallerNumber]) != CpuStateIdle) {
+  while (GetApState (&CpuMpData->CpuData[CallerNumber]) != CpuStateFinished) {
     CpuPause ();
   }
 
@@ -2129,6 +2231,7 @@ MpInitLibGetNumberOfProcessors (
                                       number.  If FALSE, then all the enabled APs
                                       execute the function specified by Procedure
                                       simultaneously.
+  @param[in]  ExcludeBsp              Whether let BSP also trig this task.
   @param[in]  WaitEvent               The event created by the caller with CreateEvent()
                                       service.
   @param[in]  TimeoutInMicroseconds   Indicates the time limit in microseconds for
@@ -2150,9 +2253,10 @@ MpInitLibGetNumberOfProcessors (
 
 **/
 EFI_STATUS
-StartupAllAPsWorker (
+StartupAllCPUsWorker (
   IN  EFI_AP_PROCEDURE          Procedure,
   IN  BOOLEAN                   SingleThread,
+  IN  BOOLEAN                   ExcludeBsp,
   IN  EFI_EVENT                 WaitEvent               OPTIONAL,
   IN  UINTN                     TimeoutInMicroseconds,
   IN  VOID                      *ProcedureArgument      OPTIONAL,
@@ -2174,7 +2278,7 @@ StartupAllAPsWorker (
     *FailedCpuList = NULL;
   }
 
-  if (CpuMpData->CpuCount == 1) {
+  if (CpuMpData->CpuCount == 1 && ExcludeBsp) {
     return EFI_NOT_STARTED;
   }
 
@@ -2217,9 +2321,9 @@ StartupAllAPsWorker (
     }
   }
 
-  if (!HasEnabledAp) {
+  if (!HasEnabledAp && ExcludeBsp) {
     //
-    // If no enabled AP exists, return EFI_NOT_STARTED.
+    // If no enabled AP exists and not include Bsp to do the procedure, return EFI_NOT_STARTED.
     //
     return EFI_NOT_STARTED;
   }
@@ -2263,6 +2367,13 @@ StartupAllAPsWorker (
         break;
       }
     }
+  }
+
+  if (!ExcludeBsp) {
+    //
+    // Start BSP.
+    //
+    Procedure (ProcedureArgument);
   }
 
   Status = EFI_SUCCESS;
@@ -2410,3 +2521,47 @@ GetCpuMpDataFromGuidedHob (
   return CpuMpData;
 }
 
+/**
+  This service executes a caller provided function on all enabled CPUs.
+
+  @param[in]  Procedure               A pointer to the function to be run on
+                                      enabled APs of the system. See type
+                                      EFI_AP_PROCEDURE.
+  @param[in]  TimeoutInMicroseconds   Indicates the time limit in microseconds for
+                                      APs to return from Procedure, either for
+                                      blocking or non-blocking mode. Zero means
+                                      infinity. TimeoutInMicroseconds is ignored
+                                      for BSP.
+  @param[in]  ProcedureArgument       The parameter passed into Procedure for
+                                      all APs.
+
+  @retval EFI_SUCCESS             In blocking mode, all CPUs have finished before
+                                  the timeout expired.
+  @retval EFI_SUCCESS             In non-blocking mode, function has been dispatched
+                                  to all enabled CPUs.
+  @retval EFI_DEVICE_ERROR        Caller processor is AP.
+  @retval EFI_NOT_READY           Any enabled APs are busy.
+  @retval EFI_NOT_READY           MP Initialize Library is not initialized.
+  @retval EFI_TIMEOUT             In blocking mode, the timeout expired before
+                                  all enabled APs have finished.
+  @retval EFI_INVALID_PARAMETER   Procedure is NULL.
+
+**/
+EFI_STATUS
+EFIAPI
+MpInitLibStartupAllCPUs (
+  IN  EFI_AP_PROCEDURE          Procedure,
+  IN  UINTN                     TimeoutInMicroseconds,
+  IN  VOID                      *ProcedureArgument      OPTIONAL
+  )
+{
+  return StartupAllCPUsWorker (
+           Procedure,
+           FALSE,
+           FALSE,
+           NULL,
+           TimeoutInMicroseconds,
+           ProcedureArgument,
+           NULL
+           );
+}

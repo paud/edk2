@@ -3,13 +3,7 @@ Entry and initialization module for the browser.
 
 Copyright (c) 2007 - 2018, Intel Corporation. All rights reserved.<BR>
 Copyright (c) 2014, Hewlett-Packard Development Company, L.P.<BR>
-This program and the accompanying materials
-are licensed and made available under the terms and conditions of the BSD License
-which accompanies this distribution.  The full text of the license may be found at
-http://opensource.org/licenses/bsd-license.php
-
-THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
-WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
+SPDX-License-Identifier: BSD-2-Clause-Patent
 
 **/
 
@@ -2882,6 +2876,7 @@ UiDisplayMenu (
       //
       ControlFlag = CfUpdateHelpString;
 
+      ASSERT (NewPos != NULL);
       UpdateHighlightMenuInfo(NewPos, TopOfScreen, SkipValue);
 
       if (SkipHighLight) {
@@ -2910,7 +2905,7 @@ UiDisplayMenu (
         Temp2 = 0;
       }
 
-      if (NewPos != NULL && (MenuOption == NULL || NewPos != &MenuOption->Link)) {
+      if (MenuOption == NULL || NewPos != &MenuOption->Link) {
         if (MenuOption != NULL) {
           //
           // Remove the old highlight menu.

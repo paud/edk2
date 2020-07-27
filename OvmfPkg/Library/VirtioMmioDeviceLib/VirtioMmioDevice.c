@@ -5,13 +5,7 @@
   Copyright (C) 2013, ARM Ltd.
   Copyright (C) 2017, AMD Inc. All rights reserved.<BR>
 
-  This program and the accompanying materials are licensed and made available
-  under the terms and conditions of the BSD License which accompanies this
-  distribution. The full text of the license may be found at
-  http://opensource.org/licenses/bsd-license.php
-
-  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS, WITHOUT
-  WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
+  SPDX-License-Identifier: BSD-2-Clause-Patent
 
 **/
 
@@ -99,7 +93,7 @@ VirtioMmioInit (
     // The ARM Base and Foundation Models do not report a valid VirtIo VendorId.
     // They return a value of 0x0 for the VendorId.
     //
-    DEBUG((EFI_D_WARN, "VirtioMmioInit: Warning: The VendorId (0x%X) does not "
+    DEBUG((DEBUG_WARN, "VirtioMmioInit: Warning: The VendorId (0x%X) does not "
                        "match the VirtIo VendorId (0x%X).\n",
                        VendorId, VIRTIO_VENDOR_ID));
   }

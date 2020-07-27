@@ -5,13 +5,7 @@
 # Copyright (c) 2009 - 2018, Intel Corporation. All rights reserved.<BR>
 # Copyright (c) 2016 - 2018, ARM Limited. All rights reserved.<BR>
 #
-# This program and the accompanying materials are licensed and made available under
-# the terms and conditions of the BSD License which accompanies this distribution.
-# The full text of the license may be found at
-# http://opensource.org/licenses/bsd-license.php
-#
-# THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
-# WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
+# SPDX-License-Identifier: BSD-2-Clause-Patent
 #
 ##
 
@@ -39,6 +33,9 @@
 
   ## @libraryclass   provides BCFG command
   BcfgCommandLib|Include/Library/BcfgCommandLib.h
+
+  ## @libraryclass   provides the AcpiView command
+  AcpiViewCommandLib|Include/Library/AcpiViewCommandLib.h
 
 [Guids]
   gEfiShellEnvironment2ExtGuid    = {0xd2c18636, 0x40e5, 0x4eb5, {0xa3, 0x1b, 0x36, 0x69, 0x5f, 0xd4, 0x2c, 0x87}}

@@ -13,14 +13,8 @@
 
 Copyright (c) 2018 Qualcomm Datacenter Technologies, Inc.
 Copyright (c) 2014, Hewlett-Packard Development Company, L.P.<BR>
-Copyright (c) 2006 - 2018, Intel Corporation. All rights reserved.<BR>
-This program and the accompanying materials
-are licensed and made available under the terms and conditions of the BSD License
-which accompanies this distribution.  The full text of the license may be found at
-http://opensource.org/licenses/bsd-license.php
-
-THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
-WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
+Copyright (c) 2006 - 2019, Intel Corporation. All rights reserved.<BR>
+SPDX-License-Identifier: BSD-2-Clause-Patent
 
 **/
 
@@ -45,6 +39,7 @@ PartitionValidMbr (
   UINT32  StartingLBA;
   UINT32  EndingLBA;
   UINT32  NewEndingLBA;
+  UINT32  SizeInLBA;
   INTN    Index1;
   INTN    Index2;
   BOOLEAN MbrValid;
@@ -57,13 +52,34 @@ PartitionValidMbr (
   //
   MbrValid = FALSE;
   for (Index1 = 0; Index1 < MAX_MBR_PARTITIONS; Index1++) {
-    if (Mbr->Partition[Index1].OSIndicator == 0x00 || UNPACK_UINT32 (Mbr->Partition[Index1].SizeInLBA) == 0) {
+    StartingLBA = UNPACK_UINT32 (Mbr->Partition[Index1].StartingLBA);
+    SizeInLBA   = UNPACK_UINT32 (Mbr->Partition[Index1].SizeInLBA);
+
+    //
+    // If the MBR with partition entry covering the ENTIRE disk, i.e. start at LBA0
+    // with whole disk size, we treat it as an invalid MBR partition.
+    //
+    if ((StartingLBA == 0) &&
+        (SizeInLBA == (LastLba + 1))) {
+      //
+      // Refer to the http://manpages.ubuntu.com/manpages/bionic/man8/mkudffs.8.html
+      // "WHOLE DISK VS PARTITION"
+      // Some linux ISOs may put the MBR table in the first 512 bytes for compatibility reasons with Windows.
+      // Linux  kernel  ignores MBR table if contains partition which starts at sector 0.
+      // Skip it because we don't have the partition check for UDF(El Torito compatible).
+      // It would continue to do the whole disk check in the UDF routine.
+      //
+      DEBUG ((DEBUG_INFO, "PartitionValidMbr: MBR table has partition entry covering the ENTIRE disk. Don't treat it as a valid MBR.\n"));
+
+      return FALSE;
+    }
+
+    if (Mbr->Partition[Index1].OSIndicator == 0x00 || SizeInLBA == 0) {
       continue;
     }
 
     MbrValid    = TRUE;
-    StartingLBA = UNPACK_UINT32 (Mbr->Partition[Index1].StartingLBA);
-    EndingLBA   = StartingLBA + UNPACK_UINT32 (Mbr->Partition[Index1].SizeInLBA) - 1;
+    EndingLBA   = StartingLBA + SizeInLBA - 1;
     if (EndingLBA > LastLba) {
       //
       // Compatibility Errata:
@@ -83,12 +99,15 @@ PartitionValidMbr (
     }
 
     for (Index2 = Index1 + 1; Index2 < MAX_MBR_PARTITIONS; Index2++) {
-      if (Mbr->Partition[Index2].OSIndicator == 0x00 || UNPACK_UINT32 (Mbr->Partition[Index2].SizeInLBA) == 0) {
+      StartingLBA = UNPACK_UINT32 (Mbr->Partition[Index2].StartingLBA);
+      SizeInLBA   = UNPACK_UINT32 (Mbr->Partition[Index2].SizeInLBA);
+
+      if (Mbr->Partition[Index2].OSIndicator == 0x00 || SizeInLBA == 0) {
         continue;
       }
 
-      NewEndingLBA = UNPACK_UINT32 (Mbr->Partition[Index2].StartingLBA) + UNPACK_UINT32 (Mbr->Partition[Index2].SizeInLBA) - 1;
-      if (NewEndingLBA >= StartingLBA && UNPACK_UINT32 (Mbr->Partition[Index2].StartingLBA) <= EndingLBA) {
+      NewEndingLBA = StartingLBA + SizeInLBA - 1;
+      if (NewEndingLBA >= StartingLBA && StartingLBA <= EndingLBA) {
         //
         // This region overlaps with the Index1'th region
         //
@@ -141,14 +160,24 @@ PartitionInstallMbrChildHandles (
   EFI_DEVICE_PATH_PROTOCOL     *LastDevicePathNode;
   UINT32                       BlockSize;
   UINT32                       MediaId;
-  EFI_LBA                      LastBlock;
+  EFI_LBA                      LastSector;
   EFI_PARTITION_INFO_PROTOCOL  PartitionInfo;
 
   Found           = EFI_NOT_FOUND;
 
-  BlockSize = BlockIo->Media->BlockSize;
-  MediaId   = BlockIo->Media->MediaId;
-  LastBlock = BlockIo->Media->LastBlock;
+  BlockSize   = BlockIo->Media->BlockSize;
+  MediaId     = BlockIo->Media->MediaId;
+  LastSector  = DivU64x32 (
+                  MultU64x32 (BlockIo->Media->LastBlock + 1, BlockSize),
+                  MBR_SIZE
+                  ) - 1;
+
+  //
+  // Ensure the block size can hold the MBR
+  //
+  if (BlockSize < sizeof (MASTER_BOOT_RECORD)) {
+    return EFI_NOT_FOUND;
+  }
 
   Mbr = AllocatePool (BlockSize);
   if (Mbr == NULL) {
@@ -166,7 +195,7 @@ PartitionInstallMbrChildHandles (
     Found = Status;
     goto Done;
   }
-  if (!PartitionValidMbr (Mbr, LastBlock)) {
+  if (!PartitionValidMbr (Mbr, LastSector)) {
     goto Done;
   }
   //

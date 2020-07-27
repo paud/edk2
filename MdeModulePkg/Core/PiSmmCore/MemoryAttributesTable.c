@@ -2,13 +2,7 @@
   PI SMM MemoryAttributes support
 
 Copyright (c) 2016, Intel Corporation. All rights reserved.<BR>
-This program and the accompanying materials
-are licensed and made available under the terms and conditions of the BSD License
-which accompanies this distribution.  The full text of the license may be found at
-http://opensource.org/licenses/bsd-license.php
-
-THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
-WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
+SPDX-License-Identifier: BSD-2-Clause-Patent
 
 **/
 
@@ -158,7 +152,7 @@ SortMemoryMap (
 }
 
 /**
-  Merge continous memory map entries whose have same attributes.
+  Merge continuous memory map entries whose have same attributes.
 
   @param[in, out]  MemoryMap              A pointer to the buffer in which firmware places
                                           the current memory map.
@@ -306,7 +300,7 @@ GetImageRecordByAddress (
   @param[in]       ImageRecord            An image record whose [ImageBase, ImageSize] covered
                                           by old memory map entry.
   @param[in, out]  NewRecord              A pointer to several new memory map entries.
-                                          The caller gurantee the buffer size be 1 +
+                                          The caller guarantee the buffer size be 1 +
                                           (SplitRecordCount * DescriptorSize) calculated
                                           below.
   @param[in]       OldRecord              A pointer to one old memory map entry.
@@ -456,7 +450,7 @@ GetMaxSplitRecordCount (
 
   @param[in]       OldRecord              A pointer to one old memory map entry.
   @param[in, out]  NewRecord              A pointer to several new memory map entries.
-                                          The caller gurantee the buffer size be 1 +
+                                          The caller guarantee the buffer size be 1 +
                                           (SplitRecordCount * DescriptorSize) calculated
                                           below.
   @param[in]       MaxSplitRecordCount    The max number of splitted entries
@@ -673,7 +667,7 @@ SplitTable (
   This function for GetMemoryMap() with memory attributes table.
 
   It calls original GetMemoryMap() to get the original memory map information. Then
-  plus the additional memory map entries for PE Code/Data seperation.
+  plus the additional memory map entries for PE Code/Data separation.
 
   @param[in, out]  MemoryMapSize          A pointer to the size, in bytes, of the
                                           MemoryMap buffer. On input, this is the size of
@@ -1032,7 +1026,6 @@ SmmInsertImageRecord (
   IMAGE_PROPERTIES_RECORD              *ImageRecord;
   CHAR8                                *PdbPointer;
   IMAGE_PROPERTIES_RECORD_CODE_SECTION *ImageRecordCodeSection;
-  UINT16                               Magic;
 
   DEBUG ((DEBUG_VERBOSE, "SMM InsertImageRecord - 0x%x\n", DriverEntry));
   DEBUG ((DEBUG_VERBOSE, "SMM InsertImageRecord - 0x%016lx - 0x%08x\n", DriverEntry->ImageBuffer, DriverEntry->NumberOfPage));
@@ -1076,21 +1069,7 @@ SmmInsertImageRecord (
   //
   // Get SectionAlignment
   //
-  if (Hdr.Pe32->FileHeader.Machine == IMAGE_FILE_MACHINE_IA64 && Hdr.Pe32->OptionalHeader.Magic == EFI_IMAGE_NT_OPTIONAL_HDR32_MAGIC) {
-    //
-    // NOTE: Some versions of Linux ELILO for Itanium have an incorrect magic value
-    //       in the PE/COFF Header. If the MachineType is Itanium(IA64) and the
-    //       Magic value in the OptionalHeader is EFI_IMAGE_NT_OPTIONAL_HDR32_MAGIC
-    //       then override the magic value to EFI_IMAGE_NT_OPTIONAL_HDR64_MAGIC
-    //
-    Magic = EFI_IMAGE_NT_OPTIONAL_HDR64_MAGIC;
-  } else {
-    //
-    // Get the magic value from the PE/COFF Optional Header
-    //
-    Magic = Hdr.Pe32->OptionalHeader.Magic;
-  }
-  if (Magic == EFI_IMAGE_NT_OPTIONAL_HDR32_MAGIC) {
+  if (Hdr.Pe32->OptionalHeader.Magic == EFI_IMAGE_NT_OPTIONAL_HDR32_MAGIC) {
     SectionAlignment  = Hdr.Pe32->OptionalHeader.SectionAlignment;
   } else {
     SectionAlignment  = Hdr.Pe32Plus->OptionalHeader.SectionAlignment;

@@ -2,13 +2,7 @@
   CPU exception handler library implementation for PEIM module.
 
 Copyright (c) 2016 - 2018, Intel Corporation. All rights reserved.<BR>
-This program and the accompanying materials are licensed and made available under
-the terms and conditions of the BSD License that accompanies this distribution.
-The full text of the license may be found at
-http://opensource.org/licenses/bsd-license.php.
-
-THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
-WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
+SPDX-License-Identifier: BSD-2-Clause-Patent
 
 **/
 
@@ -17,6 +11,7 @@ WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
 #include <Library/DebugLib.h>
 #include <Library/HobLib.h>
 #include <Library/MemoryAllocationLib.h>
+#include <Library/PcdLib.h>
 
 CONST UINTN    mDoFarReturnFlag  = 0;
 
@@ -45,7 +40,7 @@ GetExceptionHandlerData (
 
   AsmReadIdtr (&IdtDescriptor);
   IdtTable = (IA32_IDT_GATE_DESCRIPTOR *)IdtDescriptor.Base;
-  
+
   Exception0StubHeader = (EXCEPTION0_STUB_HEADER *)ArchGetIdtHandler (&IdtTable[0]);
   return Exception0StubHeader->ExceptionHandlerData;
 }
@@ -57,7 +52,7 @@ GetExceptionHandlerData (
   exception handler data. The new allocated memory layout follows structure EXCEPTION0_STUB_HEADER.
   The code assumes that all processors uses the same exception handler for #0 exception.
 
-  @param  pointer to exception handler data.
+  @param ExceptionHandlerData  pointer to exception handler data.
 **/
 VOID
 SetExceptionHandlerData (
@@ -73,7 +68,7 @@ SetExceptionHandlerData (
   //
   AsmReadIdtr (&IdtDescriptor);
   IdtTable = (IA32_IDT_GATE_DESCRIPTOR *)IdtDescriptor.Base;
-  
+
   Exception0StubHeader = AllocatePool (sizeof (*Exception0StubHeader));
   ASSERT (Exception0StubHeader != NULL);
   CopyMem (
@@ -239,5 +234,29 @@ InitializeCpuExceptionHandlersEx (
   IN CPU_EXCEPTION_INIT_DATA            *InitData OPTIONAL
   )
 {
-  return InitializeCpuExceptionHandlers (VectorInfo);
+  EFI_STATUS                        Status;
+
+  //
+  // To avoid repeat initialization of default handlers, the caller should pass
+  // an extended init data with InitDefaultHandlers set to FALSE. There's no
+  // need to call this method to just initialize default handlers. Call non-ex
+  // version instead; or this method must be implemented as a simple wrapper of
+  // non-ex version of it, if this version has to be called.
+  //
+  if (InitData == NULL || InitData->Ia32.InitDefaultHandlers) {
+    Status = InitializeCpuExceptionHandlers (VectorInfo);
+  } else {
+    Status = EFI_SUCCESS;
+  }
+
+  if (!EFI_ERROR (Status)) {
+    //
+    // Initializing stack switch is only necessary for Stack Guard functionality.
+    //
+    if (PcdGetBool (PcdCpuStackGuard) && InitData != NULL) {
+      Status = ArchSetupExceptionStack (InitData);
+    }
+  }
+
+  return  Status;
 }
